@@ -323,7 +323,7 @@ class _ChessPageState extends State<ChessPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Qin Chess'),
+            const Text('T9ChessApp'),
             if (_controller.gameMode == GameMode.vsEngine)
               Text(
                 'vs Engine — ${_controller.engineLevel.label}',

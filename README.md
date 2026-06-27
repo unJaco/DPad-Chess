@@ -1,6 +1,6 @@
-# dpad_chess
+# T9ChessApp
 
-DPad Lichess Client
+A Lichess client for D-pad / T9 keypad phones (built for the Qin F21 Pro).
 
 ## Getting Started
 

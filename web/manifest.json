@@ -1,6 +1,6 @@
 {
-    "name": "dpad_chess",
-    "short_name": "dpad_chess",
+    "name": "T9ChessApp",
+    "short_name": "T9ChessApp",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
