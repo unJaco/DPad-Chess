@@ -66,9 +66,6 @@ class _TokenEntryDialogState extends State<TokenEntryDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.colorScheme;
-
     return AlertDialog(
       title: const Text('Lichess Account'),
       content: Column(
