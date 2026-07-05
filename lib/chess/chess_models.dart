@@ -1,13 +1,8 @@
-enum PieceColor {
-  white,
-  black,
-}
+enum PieceColor { white, black }
 
 extension PieceColorX on PieceColor {
   PieceColor get opposite {
-    return this == PieceColor.white
-        ? PieceColor.black
-        : PieceColor.white;
+    return this == PieceColor.white ? PieceColor.black : PieceColor.white;
   }
 
   String get label {
@@ -15,14 +10,7 @@ extension PieceColorX on PieceColor {
   }
 }
 
-enum PieceType {
-  king,
-  queen,
-  rook,
-  bishop,
-  knight,
-  pawn,
-}
+enum PieceType { king, queen, rook, bishop, knight, pawn }
 
 class Piece {
   const Piece(this.color, this.type);
@@ -50,8 +38,8 @@ class Piece {
 
 class Square {
   const Square(this.file, this.rank)
-      : assert(file >= 0 && file < 8),
-        assert(rank >= 0 && rank < 8);
+    : assert(file >= 0 && file < 8),
+      assert(rank >= 0 && rank < 8);
 
   final int file;
   final int rank;
@@ -82,11 +70,7 @@ class Square {
 }
 
 class ChessMove {
-  const ChessMove({
-    required this.from,
-    required this.to,
-    this.promotion,
-  });
+  const ChessMove({required this.from, required this.to, this.promotion});
 
   final Square from;
   final Square to;
@@ -191,10 +175,7 @@ class ChessPosition {
       pieces[Square(file, 7)] = Piece(PieceColor.black, backRank[file]);
     }
 
-    return ChessPosition(
-      pieces: pieces,
-      sideToMove: PieceColor.white,
-    );
+    return ChessPosition(pieces: pieces, sideToMove: PieceColor.white);
   }
 
   Piece? pieceAt(Square square) => _pieces[square];
@@ -257,8 +238,10 @@ class ChessPosition {
         next.remove(Square(move.to.file, capturedRank));
       }
       if ((move.to.rank - move.from.rank).abs() == 2) {
-        nextEnPassantTarget =
-            Square(move.from.file, (move.from.rank + move.to.rank) ~/ 2);
+        nextEnPassantTarget = Square(
+          move.from.file,
+          (move.from.rank + move.to.rank) ~/ 2,
+        );
       }
     }
 
@@ -277,11 +260,15 @@ class ChessPosition {
         next[Square(3, backRank)] = Piece(movingPiece.color, PieceType.rook);
       }
       if (movingPiece.color == PieceColor.white) {
-        nextRights =
-            nextRights.copyWith(whiteKingside: false, whiteQueenside: false);
+        nextRights = nextRights.copyWith(
+          whiteKingside: false,
+          whiteQueenside: false,
+        );
       } else {
-        nextRights =
-            nextRights.copyWith(blackKingside: false, blackQueenside: false);
+        nextRights = nextRights.copyWith(
+          blackKingside: false,
+          blackQueenside: false,
+        );
       }
     }
 

@@ -4,14 +4,10 @@ import 'package:flutter/foundation.dart';
 
 import 'chess_models.dart';
 import 'engine_service.dart';
+import 'game_config.dart';
 import 'lichess_service.dart';
 
-enum CursorDirection {
-  up,
-  down,
-  left,
-  right,
-}
+enum CursorDirection { up, down, left, right }
 
 class ChessController extends ChangeNotifier {
   final List<ChessPosition> _history = [ChessPosition.initial()];
@@ -24,11 +20,20 @@ class ChessController extends ChangeNotifier {
 
   bool whiteBottom = true;
 
+  // True once a game has been started; combined with [gameOver] to tell whether
+  // there is a resumable game in progress.
+  bool _hasStarted = false;
+
+  // ── Review (replay) ──────────────────────────────────────────────────────────
+  bool _reviewMode = false;
+  int _reviewIndex = 0;
+
   // ── Engine ─────────────────────────────────────────────────────────────────
   final EngineService _engineService = EngineService();
   GameMode _gameMode = GameMode.twoPlayer;
   PieceColor _humanColor = PieceColor.white;
   EngineLevel _engineLevel = EngineLevel.intermediate;
+  TimeControl? _timeControl;
   bool _isEngineThinking = false;
   bool _engineMoveCancelled = false;
   PieceColor? _resignedColor;
@@ -41,12 +46,35 @@ class ChessController extends ChangeNotifier {
 
   ChessPosition get _position => _history.last;
 
-  ChessPosition get position => _position;
+  /// Position shown in the UI. While reviewing this is the historical position
+  /// at [_reviewIndex]; otherwise the live position. Internal move logic always
+  /// uses [_position] (the live position), never this.
+  ChessPosition get _viewPosition =>
+      _reviewMode ? _history[_reviewIndex] : _history.last;
+
+  ChessPosition get position => _viewPosition;
   Square get cursor => _cursor;
   Square? get selectedSquare => _selectedSquare;
   List<Square> get legalTargets => _legalTargets;
-  ChessMove? get lastMove => _moves.isEmpty ? null : _moves.last;
+  ChessMove? get lastMove {
+    if (_reviewMode) {
+      return _reviewIndex > 0 ? _moves[_reviewIndex - 1] : null;
+    }
+    return _moves.isEmpty ? null : _moves.last;
+  }
+
   List<String> get moveHistory => _moves.map((m) => m.uci).toList();
+
+  // ── Review getters ───────────────────────────────────────────────────────────
+  bool get isReviewing => _reviewMode;
+
+  /// Number of plies into the game currently shown (0 = starting position).
+  int get reviewPly => _reviewIndex;
+
+  /// Total plies (half-moves) played in the game.
+  int get totalPlies => _moves.length;
+
+  TimeControl? get timeControl => _timeControl;
 
   bool get gameOver =>
       _position.isCheckmate ||
@@ -55,6 +83,10 @@ class ChessController extends ChangeNotifier {
       _onlineEndReason != null;
 
   bool get isResigned => _resignedColor != null;
+
+  /// True when a game has been started and has not yet ended — i.e. there is a
+  /// game the user can resume.
+  bool get hasActiveGame => _hasStarted && !gameOver;
 
   // Online-related getters
   bool get isOnlineMode => _gameMode == GameMode.lichess;
@@ -67,8 +99,7 @@ class ChessController extends ChangeNotifier {
   EngineLevel get engineLevel => _engineLevel;
   bool get isEngineThinking => _isEngineThinking;
   bool get isHumanTurn =>
-      _gameMode == GameMode.twoPlayer ||
-      _position.sideToMove == _humanColor;
+      _gameMode == GameMode.twoPlayer || _position.sideToMove == _humanColor;
 
   bool get isPendingPromotion => _pendingPromotionMove != null;
 
@@ -111,9 +142,9 @@ class ChessController extends ChangeNotifier {
         'cursor ${_cursor.algebraic}';
   }
 
-  Piece? pieceAt(Square square) => _position.pieceAt(square);
+  Piece? pieceAt(Square square) => _viewPosition.pieceAt(square);
 
-  bool isCursor(Square square) => square == _cursor;
+  bool isCursor(Square square) => !_reviewMode && square == _cursor;
 
   bool isSelected(Square square) => square == _selectedSquare;
 
@@ -125,6 +156,7 @@ class ChessController extends ChangeNotifier {
   }
 
   void moveCursor(CursorDirection direction) {
+    if (_reviewMode) return;
     if (_selectedSquare != null && _legalTargets.isNotEmpty) {
       _moveCursorToTarget(direction);
     } else {
@@ -170,10 +202,10 @@ class ChessController extends ChangeNotifier {
 
   (int, int) _directionVector(CursorDirection direction) {
     return switch (direction) {
-      CursorDirection.left  => (whiteBottom ? -1 : 1,  0),
-      CursorDirection.right => (whiteBottom ? 1  : -1, 0),
-      CursorDirection.up    => (0, whiteBottom ? 1  : -1),
-      CursorDirection.down  => (0, whiteBottom ? -1 : 1),
+      CursorDirection.left => (whiteBottom ? -1 : 1, 0),
+      CursorDirection.right => (whiteBottom ? 1 : -1, 0),
+      CursorDirection.up => (0, whiteBottom ? 1 : -1),
+      CursorDirection.down => (0, whiteBottom ? -1 : 1),
     };
   }
 
@@ -183,6 +215,7 @@ class ChessController extends ChangeNotifier {
   }
 
   void activate() {
+    if (_reviewMode) return;
     if (gameOver) return;
     if (_isEngineThinking || !isHumanTurn) return;
     if (_isWaitingForOpponent) return;
@@ -240,6 +273,7 @@ class ChessController extends ChangeNotifier {
   }
 
   void undo() {
+    if (_reviewMode) return;
     if (isOnlineMode) return; // undo not supported in online games
     if (_resignedColor != null) {
       _resignedColor = null;
@@ -278,6 +312,8 @@ class ChessController extends ChangeNotifier {
     required GameMode mode,
     required PieceColor humanColor,
     required EngineLevel level,
+    TimeControl? timeControl,
+    bool? whiteBottom,
   }) {
     _cancelOnlineGame();
     _engineMoveCancelled = true;
@@ -285,10 +321,14 @@ class ChessController extends ChangeNotifier {
     _isEngineThinking = false;
     _resignedColor = null;
     _onlineEndReason = null;
+    _reviewMode = false;
+    _reviewIndex = 0;
+    _hasStarted = true;
 
     _gameMode = mode;
     _humanColor = humanColor;
     _engineLevel = level;
+    _timeControl = timeControl;
 
     _history
       ..clear()
@@ -299,7 +339,9 @@ class ChessController extends ChangeNotifier {
     _legalTargets = const [];
     _pendingPromotionMove = null;
 
-    whiteBottom = mode == GameMode.twoPlayer || humanColor == PieceColor.white;
+    this.whiteBottom =
+        whiteBottom ??
+        (mode == GameMode.twoPlayer || humanColor == PieceColor.white);
     notifyListeners();
 
     if (mode == GameMode.vsEngine && humanColor == PieceColor.black) {
@@ -313,6 +355,7 @@ class ChessController extends ChangeNotifier {
   Future<void> startOnlineGame({
     required String gameId,
     required PieceColor myColor,
+    TimeControl? timeControl,
   }) async {
     _cancelOnlineGame();
     _engineMoveCancelled = true;
@@ -320,9 +363,13 @@ class ChessController extends ChangeNotifier {
     _isEngineThinking = false;
     _resignedColor = null;
     _onlineEndReason = null;
+    _reviewMode = false;
+    _reviewIndex = 0;
+    _hasStarted = true;
 
     _gameMode = GameMode.lichess;
     _humanColor = myColor;
+    _timeControl = timeControl;
 
     _history
       ..clear()
@@ -353,8 +400,9 @@ class ChessController extends ChangeNotifier {
     whiteBottom = state.myColor == PieceColor.white;
 
     // Lichess sends the full move list each time; apply any moves we don't have.
-    final remoteMoves =
-        state.moves.isEmpty ? <String>[] : state.moves.split(' ');
+    final remoteMoves = state.moves.isEmpty
+        ? <String>[]
+        : state.moves.split(' ');
 
     while (_moves.length < remoteMoves.length) {
       final uci = remoteMoves[_moves.length];
@@ -363,6 +411,9 @@ class ChessController extends ChangeNotifier {
 
     if (state.status != 'started' && state.status != 'created') {
       _handleOnlineGameOver(state.status);
+      // Game is over — stop listening so we don't try to reconnect a finished
+      // game (which would otherwise loop through the reconnect backoff).
+      _cancelOnlineGame();
     }
 
     notifyListeners();
@@ -370,15 +421,15 @@ class ChessController extends ChangeNotifier {
 
   void _handleOnlineGameOver(String status) {
     _onlineEndReason = switch (status) {
-      'mate'                  => gameResultText ?? 'Checkmate!',
-      'resign'                => '${_position.sideToMove.label} resigned',
-      'outoftime'             => 'Time out!',
-      'draw'                  => 'Draw',
-      'stalemate'             => 'Draw by stalemate',
-      'threefoldRepetition'   => 'Draw by repetition',
-      'insufficientMaterial'  => 'Draw — insufficient material',
-      'aborted'               => 'Game aborted',
-      _                       => 'Game over',
+      'mate' => gameResultText ?? 'Checkmate!',
+      'resign' => '${_position.sideToMove.label} resigned',
+      'outoftime' => 'Time out!',
+      'draw' => 'Draw',
+      'stalemate' => 'Draw by stalemate',
+      'threefoldRepetition' => 'Draw by repetition',
+      'insufficientMaterial' => 'Draw — insufficient material',
+      'aborted' => 'Game aborted',
+      _ => 'Game over',
     };
     // Prevent the local-checkmate branch from overwriting the online reason.
     // If it was actually a checkmate, the local isCheckmate flag will be true
@@ -403,6 +454,9 @@ class ChessController extends ChangeNotifier {
     _cancelOnlineGame();
     _resignedColor = null;
     _onlineEndReason = null;
+    _reviewMode = false;
+    _reviewIndex = 0;
+    _hasStarted = false;
     _history
       ..clear()
       ..add(ChessPosition.initial());
@@ -416,6 +470,47 @@ class ChessController extends ChangeNotifier {
 
   void toggleOrientation() {
     whiteBottom = !whiteBottom;
+    notifyListeners();
+  }
+
+  // ── Review (replay) controls ─────────────────────────────────────────────────
+
+  /// Enters review mode, showing the final position. Selection is cleared.
+  void enterReview() {
+    _reviewMode = true;
+    _reviewIndex = _history.length - 1;
+    _selectedSquare = null;
+    _legalTargets = const [];
+    notifyListeners();
+  }
+
+  void exitReview() {
+    if (!_reviewMode) return;
+    _reviewMode = false;
+    notifyListeners();
+  }
+
+  void reviewPrev() {
+    if (!_reviewMode || _reviewIndex <= 0) return;
+    _reviewIndex--;
+    notifyListeners();
+  }
+
+  void reviewNext() {
+    if (!_reviewMode || _reviewIndex >= _history.length - 1) return;
+    _reviewIndex++;
+    notifyListeners();
+  }
+
+  void reviewFirst() {
+    if (!_reviewMode) return;
+    _reviewIndex = 0;
+    notifyListeners();
+  }
+
+  void reviewLast() {
+    if (!_reviewMode) return;
+    _reviewIndex = _history.length - 1;
     notifyListeners();
   }
 
@@ -483,19 +578,22 @@ class ChessController extends ChangeNotifier {
     final moves = List<String>.from(moveHistory);
     final level = _engineLevel;
 
-    _engineService.requestMove(moveHistory: moves, level: level).then((uci) {
-      if (_engineMoveCancelled) return;
-      _isEngineThinking = false;
+    _engineService
+        .requestMove(moveHistory: moves, level: level)
+        .then((uci) {
+          if (_engineMoveCancelled) return;
+          _isEngineThinking = false;
 
-      if (uci.isEmpty || uci == '(none)' || gameOver) {
-        notifyListeners();
-        return;
-      }
-      _applyMove(EngineService.parseMoveUci(uci));
-    }).catchError((_) {
-      _isEngineThinking = false;
-      notifyListeners();
-    });
+          if (uci.isEmpty || uci == '(none)' || gameOver) {
+            notifyListeners();
+            return;
+          }
+          _applyMove(EngineService.parseMoveUci(uci));
+        })
+        .catchError((_) {
+          _isEngineThinking = false;
+          notifyListeners();
+        });
   }
 
   void confirmPromotion(PieceType piece) {
