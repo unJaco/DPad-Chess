@@ -1,20 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'app_settings.dart';
 import 'chess_controller.dart';
 import 'chess_models.dart';
 import 'engine_service.dart';
-import 'online_setup_dialog.dart';
-import 'token_entry_dialog.dart';
+import 'help_content.dart';
 
-class ChessPage extends StatefulWidget {
-  const ChessPage({super.key});
+/// The in-game board. The [controller] is created and configured by the setup
+/// flow before this page is pushed; this page only renders it and handles the
+/// in-game / review keypad input. The controller is owned by the app root, so
+/// it is not disposed here.
+class GamePage extends StatefulWidget {
+  const GamePage({super.key, required this.controller, required this.settings});
+
+  final ChessController controller;
+  final AppSettings settings;
 
   @override
-  State<ChessPage> createState() => _ChessPageState();
+  State<GamePage> createState() => _GamePageState();
 }
 
-class _ChessPageState extends State<ChessPage> {
+class _GamePageState extends State<GamePage> {
   late final ChessController _controller;
   late final FocusNode _boardFocusNode;
   late final Listenable _rebuildListenable;
@@ -25,7 +32,7 @@ class _ChessPageState extends State<ChessPage> {
   @override
   void initState() {
     super.initState();
-    _controller = ChessController();
+    _controller = widget.controller;
     _historyScrollController = ScrollController();
     _boardFocusNode = FocusNode(debugLabel: 'chess-board');
     _rebuildListenable = Listenable.merge([_controller, _boardFocusNode]);
@@ -34,9 +41,6 @@ class _ChessPageState extends State<ChessPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _boardFocusNode.requestFocus();
-      // Initialize engine in background; show the dialog immediately.
-      _controller.initialize();
-      _showNewGameDialog();
     });
   }
 
@@ -45,7 +49,6 @@ class _ChessPageState extends State<ChessPage> {
     _controller.removeListener(_onControllerChanged);
     _historyScrollController.dispose();
     _boardFocusNode.dispose();
-    _controller.dispose();
     super.dispose();
   }
 
@@ -106,7 +109,9 @@ class _ChessPageState extends State<ChessPage> {
 
   void _showResignDialog() {
     if (_controller.gameOver) return;
-    if (!_controller.isHumanTurn) return;
+    // Online: you can resign on any turn (Lichess resigns you). Offline vs the
+    // engine, resign only on your turn — resign() ends the side to move.
+    if (!_controller.isOnlineMode && !_controller.isHumanTurn) return;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -137,19 +142,46 @@ class _ChessPageState extends State<ChessPage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text(_controller.gameResultText ?? 'Game Over'),
-        actions: [
-          FilledButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              _showNewGameDialog();
-            },
-            child: const Text('New Game'),
-          ),
-        ],
+      builder: (ctx) => _GameOverDialog(
+        resultText: _controller.gameResultText ?? 'Game Over',
+        isOnline: _controller.isOnlineMode,
+        onPlayAgain: () {
+          Navigator.of(ctx).pop();
+          _playAgain();
+        },
+        onReview: () {
+          Navigator.of(ctx).pop();
+          _controller.enterReview();
+          _boardFocusNode.requestFocus();
+        },
+        onMainMenu: () {
+          Navigator.of(ctx).pop();
+          _goToMainMenu();
+        },
       ),
     );
+  }
+
+  /// Rematch with the same settings (offline). For online games a fresh Lichess
+  /// game must be created, so we drop back to the online setup page instead.
+  void _playAgain() {
+    if (_controller.isOnlineMode) {
+      Navigator.of(context).pop();
+      return;
+    }
+    _controller.startNewGame(
+      mode: _controller.gameMode,
+      humanColor: _controller.humanColor,
+      level: _controller.engineLevel,
+      timeControl: _controller.timeControl,
+      whiteBottom: _controller.whiteBottom,
+    );
+    _boardFocusNode.requestFocus();
+  }
+
+  void _goToMainMenu() {
+    if (_controller.isReviewing) _controller.exitReview();
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   void _showHelpDialog() {
@@ -157,24 +189,7 @@ class _ChessPageState extends State<ChessPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Controls'),
-        content: const SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _HelpRow(key: ValueKey('nav'), icon: Icons.gamepad, label: 'D-pad', description: 'Move cursor'),
-              _HelpRow(key: ValueKey('ok'), icon: Icons.check_circle_outline, label: 'OK / Enter', description: 'Select piece or execute move'),
-              _HelpRow(key: ValueKey('resign'), icon: Icons.flag_outlined, label: '0', description: 'Resign'),
-              _HelpRow(key: ValueKey('cancel'), icon: Icons.close, label: '1', description: 'Cancel selection'),
-              _HelpRow(key: ValueKey('undo'), icon: Icons.undo, label: '*', description: 'Undo last move'),
-              _HelpRow(key: ValueKey('rotate'), icon: Icons.screen_rotation_alt, label: '#', description: 'Flip board orientation'),
-              Divider(height: 20),
-              _HelpRow(key: ValueKey('check'), icon: Icons.warning_amber_rounded, label: 'Red king', description: 'King is in check'),
-              _HelpRow(key: ValueKey('dot'), icon: Icons.circle, label: 'Dot on square', description: 'Legal move target'),
-              _HelpRow(key: ValueKey('ring'), icon: Icons.radio_button_unchecked, label: 'Ring on piece', description: 'Capturable enemy piece'),
-            ],
-          ),
-        ),
+        content: const SingleChildScrollView(child: HelpContentList()),
         actions: [
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(),
@@ -185,69 +200,17 @@ class _ChessPageState extends State<ChessPage> {
     );
   }
 
-  void _showNewGameDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => _NewGameDialog(
-        initialMode: _controller.gameMode,
-        initialColor: _controller.humanColor,
-        initialLevel: _controller.engineLevel,
-        onConfirm: (mode, color, level) {
-          Navigator.of(ctx).pop();
-          if (mode == GameMode.lichess) {
-            _showOnlineSetupFlow();
-            return;
-          }
-          _controller.startNewGame(
-            mode: mode,
-            humanColor: color,
-            level: level,
-          );
-          _boardFocusNode.requestFocus();
-        },
-        onCancel: () {
-          Navigator.of(ctx).pop();
-          _boardFocusNode.requestFocus();
-        },
-      ),
-    );
-  }
-
-  Future<void> _showOnlineSetupFlow() async {
-    final token = await _controller.lichessService.loadToken();
-    if (!mounted) return;
-    if (token == null) {
-      final tokenOk = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => TokenEntryDialog(
-          lichessService: _controller.lichessService,
-          onSuccess: () => Navigator.of(ctx).pop(true),
-          onCancel: () => Navigator.of(ctx).pop(false),
-        ),
-      );
-      if (tokenOk != true || !mounted) return;
-    }
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => OnlineSetupDialog(
-        controller: _controller,
-        onCancel: () {
-          Navigator.of(ctx).pop();
-          _boardFocusNode.requestFocus();
-        },
-      ),
-    );
-  }
-
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
 
     final key = event.logicalKey;
+
+    // While reviewing a finished game, keys step through history instead.
+    if (_controller.isReviewing) {
+      return _onReviewKey(key);
+    }
 
     // D-pad navigation
     if (key == LogicalKeyboardKey.arrowUp) {
@@ -277,8 +240,7 @@ class _ChessPageState extends State<ChessPage> {
     }
 
     // [0] — resign
-    if (key == LogicalKeyboardKey.digit0 ||
-        key == LogicalKeyboardKey.numpad0) {
+    if (key == LogicalKeyboardKey.digit0 || key == LogicalKeyboardKey.numpad0) {
       _showResignDialog();
       return KeyEventResult.handled;
     }
@@ -299,10 +261,15 @@ class _ChessPageState extends State<ChessPage> {
       return KeyEventResult.handled;
     }
 
-    // [9] — open help dialog
-    if (key == LogicalKeyboardKey.digit9 ||
-        key == LogicalKeyboardKey.numpad9) {
+    // [8] — open help dialog
+    if (key == LogicalKeyboardKey.digit8 || key == LogicalKeyboardKey.numpad8) {
       _showHelpDialog();
+      return KeyEventResult.handled;
+    }
+
+    // [9] — go to main menu
+    if (key == LogicalKeyboardKey.digit9 || key == LogicalKeyboardKey.numpad9) {
+      _goToMainMenu();
       return KeyEventResult.handled;
     }
 
@@ -315,91 +282,148 @@ class _ChessPageState extends State<ChessPage> {
     return KeyEventResult.ignored;
   }
 
+  /// Keypad handling while reviewing a finished game.
+  /// ←/→ step one ply, ↑/↓ jump to the end/start, # flips, 1 reopens the
+  /// end-of-game options, 0 returns to the start page.
+  KeyEventResult _onReviewKey(LogicalKeyboardKey key) {
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      _controller.reviewPrev();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight) {
+      _controller.reviewNext();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      _controller.reviewLast();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      _controller.reviewFirst();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.numberSign) {
+      _controller.toggleOrientation();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.digit1 || key == LogicalKeyboardKey.numpad1) {
+      _controller.exitReview();
+      _showGameOverDialog();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.digit0 ||
+        key == LogicalKeyboardKey.numpad0 ||
+        key == LogicalKeyboardKey.escape ||
+        key == LogicalKeyboardKey.backspace) {
+      _goToMainMenu();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  /// Intercepts the system/hardware back button. During an active game we don't
+  /// leave the board — we open the resign dialog instead. When the game is over
+  /// or being reviewed, back returns to the start page.
+  void _handleBackButton() {
+    if (_controller.isReviewing || _controller.gameOver) {
+      _goToMainMenu();
+      return;
+    }
+    _showResignDialog();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('T9ChessApp'),
-            if (_controller.gameMode == GameMode.vsEngine)
-              Text(
-                'vs Engine — ${_controller.engineLevel.label}',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onPrimaryContainer
-                          .withValues(alpha: 0.8),
-                    ),
-              ),
-            if (_controller.gameMode == GameMode.lichess)
-              Text(
-                'Online — Lichess AI',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onPrimaryContainer
-                          .withValues(alpha: 0.8),
-                    ),
-              ),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _handleBackButton();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('T9ChessApp'),
+              if (_controller.gameMode == GameMode.vsEngine)
+                Text(
+                  'vs Engine — ${_controller.engineLevel.label}',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onPrimaryContainer.withValues(alpha: 0.8),
+                  ),
+                ),
+              if (_controller.gameMode == GameMode.lichess)
+                Text(
+                  'Online — Lichess AI',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onPrimaryContainer.withValues(alpha: 0.8),
+                  ),
+                ),
+            ],
+          ),
+          actions: [
+            IconButton(
+              tooltip: 'Undo move',
+              onPressed: () {
+                _controller.undo();
+                _boardFocusNode.requestFocus();
+              },
+              icon: const Icon(Icons.undo),
+            ),
+            IconButton(
+              tooltip: 'Rotate board',
+              onPressed: () {
+                _controller.toggleOrientation();
+                _boardFocusNode.requestFocus();
+              },
+              icon: const Icon(Icons.screen_rotation_alt),
+            ),
+            IconButton(
+              tooltip: 'Main menu',
+              onPressed: _goToMainMenu,
+              icon: const Icon(Icons.home_outlined),
+            ),
+            IconButton(
+              tooltip: 'Help',
+              onPressed: _showHelpDialog,
+              icon: const Icon(Icons.help_outline),
+            ),
           ],
         ),
-        actions: [
-          IconButton(
-            tooltip: 'Undo move',
-            onPressed: () {
-              _controller.undo();
-              _boardFocusNode.requestFocus();
-            },
-            icon: const Icon(Icons.undo),
-          ),
-          IconButton(
-            tooltip: 'Rotate board',
-            onPressed: () {
-              _controller.toggleOrientation();
-              _boardFocusNode.requestFocus();
-            },
-            icon: const Icon(Icons.screen_rotation_alt),
-          ),
-          IconButton(
-            tooltip: 'New game',
-            onPressed: _showNewGameDialog,
-            icon: const Icon(Icons.refresh),
-          ),
-          IconButton(
-            tooltip: 'Help',
-            onPressed: _showHelpDialog,
-            icon: const Icon(Icons.help_outline),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: AnimatedBuilder(
-          animation: _rebuildListenable,
-          builder: (context, _) {
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
-              child: Column(
-                children: [
-                  _buildMoveHistory(context),
-                  _buildStatusText(context),
-                  if (_controller.isWaitingForOpponent)
-                    const LinearProgressIndicator(minHeight: 2),
-                  const SizedBox(height: 4),
-                  Expanded(
-                    child: Center(
-                      child: AspectRatio(
-                        aspectRatio: 1,
-                        child: _buildBoard(context),
+        body: SafeArea(
+          child: AnimatedBuilder(
+            animation: _rebuildListenable,
+            builder: (context, _) {
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
+                child: Column(
+                  children: [
+                    _buildMoveHistory(context),
+                    _buildStatusText(context),
+                    if (_controller.isReviewing) _buildReviewBar(context),
+                    if (_controller.isWaitingForOpponent)
+                      const LinearProgressIndicator(minHeight: 2),
+                    const SizedBox(height: 4),
+                    Expanded(
+                      child: Center(
+                        child: AspectRatio(
+                          aspectRatio: 1,
+                          child: _buildBoard(context),
+                        ),
                       ),
                     ),
-                  ),
-                ],
-              ),
-            );
-          },
+                  ],
+                ),
+              );
+            },
+          ),
         ),
       ),
     );
@@ -468,18 +492,48 @@ class _ChessPageState extends State<ChessPage> {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final isThinking = _controller.isEngineThinking;
+    final reviewing = _controller.isReviewing;
 
     return SizedBox(
       height: 16,
       child: Align(
         alignment: Alignment.centerLeft,
         child: Text(
-          _controller.statusText,
+          reviewing
+              ? 'Review — move ${_controller.reviewPly} of ${_controller.totalPlies}'
+              : _controller.statusText,
           style: theme.textTheme.labelSmall?.copyWith(
             color: isThinking ? colors.primary : colors.onSurfaceVariant,
             fontStyle: isThinking ? FontStyle.italic : FontStyle.normal,
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildReviewBar(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: colors.secondaryContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.history, size: 16, color: colors.onSecondaryContainer),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '←/→ step  •  ↑ end  •  ↓ start  •  # flip  •  1 options  •  0 menu',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: colors.onSecondaryContainer,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -522,7 +576,10 @@ class _ChessPageState extends State<ChessPage> {
                 return Expanded(
                   child: Row(
                     children: List.generate(8, (displayFile) {
-                      final square = _squareForDisplay(displayRank, displayFile);
+                      final square = _squareForDisplay(
+                        displayRank,
+                        displayFile,
+                      );
                       return Expanded(
                         child: _buildSquare(
                           context,
@@ -601,15 +658,11 @@ class _ChessPageState extends State<ChessPage> {
             // King in check: red background tint
             if (isKingInCheck)
               Positioned.fill(
-                child: Container(
-                  color: Colors.red.withValues(alpha: 0.30),
-                ),
+                child: Container(color: Colors.red.withValues(alpha: 0.30)),
               ),
             if (isLastMove)
               Positioned.fill(
-                child: Container(
-                  color: Colors.amber.withValues(alpha: 0.14),
-                ),
+                child: Container(color: Colors.amber.withValues(alpha: 0.14)),
               ),
             if (isLegalTarget && piece == null)
               Center(
@@ -627,10 +680,7 @@ class _ChessPageState extends State<ChessPage> {
                 child: Container(
                   margin: const EdgeInsets.all(5),
                   decoration: BoxDecoration(
-                    border: Border.all(
-                      color: colors.primary,
-                      width: 2.2,
-                    ),
+                    border: Border.all(color: colors.primary, width: 2.2),
                     borderRadius: BorderRadius.circular(999),
                   ),
                 ),
@@ -662,10 +712,7 @@ class _ChessPageState extends State<ChessPage> {
               Positioned.fill(
                 child: Container(
                   decoration: BoxDecoration(
-                    border: Border.all(
-                      color: colors.primary,
-                      width: 3,
-                    ),
+                    border: Border.all(color: colors.primary, width: 3),
                   ),
                 ),
               ),
@@ -739,8 +786,9 @@ class _ChessPageState extends State<ChessPage> {
   Color _squareBackgroundColor(Square square, ColorScheme colors) {
     final isLight = (square.file + square.rank).isEven;
 
-    Color background =
-        isLight ? const Color(0xFFF0D9B5) : const Color(0xFFB58863);
+    Color background = isLight
+        ? const Color(0xFFF0D9B5)
+        : const Color(0xFFB58863);
 
     if (_controller.isLastMoveSquare(square)) {
       background = Color.alphaBlend(
@@ -1011,12 +1059,7 @@ class _PieceCard extends StatelessWidget {
                 ]
               : null,
         ),
-        child: Center(
-          child: _PieceSprite(
-            piece: piece,
-            size: 42,
-          ),
-        ),
+        child: Center(child: _PieceSprite(piece: piece, size: 42)),
       ),
     );
   }
@@ -1039,13 +1082,13 @@ class _PieceSprite extends StatelessWidget {
   static const _assetPath = 'assets/pieces.png';
 
   static int _col(PieceType type) => switch (type) {
-        PieceType.queen => 0,
-        PieceType.king => 1,
-        PieceType.rook => 2,
-        PieceType.knight => 3,
-        PieceType.bishop => 4,
-        PieceType.pawn => 5,
-      };
+    PieceType.queen => 0,
+    PieceType.king => 1,
+    PieceType.rook => 2,
+    PieceType.knight => 3,
+    PieceType.bishop => 4,
+    PieceType.pawn => 5,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -1080,44 +1123,52 @@ class _PieceSprite extends StatelessWidget {
   }
 }
 
-// ── New game dialog ───────────────────────────────────────────────────────────
+// ── Game over dialog ──────────────────────────────────────────────────────────
+//
+// Keypad-navigable end-of-game options: ↑↓ move, OK activate.
 
-class _NewGameDialog extends StatefulWidget {
-  const _NewGameDialog({
-    required this.initialMode,
-    required this.initialColor,
-    required this.initialLevel,
-    required this.onConfirm,
-    required this.onCancel,
+class _GameOverDialog extends StatefulWidget {
+  const _GameOverDialog({
+    required this.resultText,
+    required this.isOnline,
+    required this.onPlayAgain,
+    required this.onReview,
+    required this.onMainMenu,
   });
 
-  final GameMode initialMode;
-  final PieceColor initialColor;
-  final EngineLevel initialLevel;
-  final void Function(GameMode, PieceColor, EngineLevel) onConfirm;
-  final VoidCallback onCancel;
+  final String resultText;
+  final bool isOnline;
+  final VoidCallback onPlayAgain;
+  final VoidCallback onReview;
+  final VoidCallback onMainMenu;
 
   @override
-  State<_NewGameDialog> createState() => _NewGameDialogState();
+  State<_GameOverDialog> createState() => _GameOverDialogState();
 }
 
-class _NewGameDialogState extends State<_NewGameDialog> {
-  late GameMode _mode;
-  late PieceColor _color;
-  late EngineLevel _level;
-
-  int _focusedRow = 0;
-  int _focusedCol = 0;
-
+class _GameOverDialogState extends State<_GameOverDialog> {
   late final FocusNode _focusNode;
+  late final List<({String label, IconData icon, VoidCallback action})>
+  _options;
+  int _focused = 0;
 
   @override
   void initState() {
     super.initState();
-    _mode = widget.initialMode;
-    _color = widget.initialColor;
-    _level = widget.initialLevel;
     _focusNode = FocusNode();
+    _options = [
+      (
+        label: widget.isOnline ? 'New Game' : 'Play Again',
+        icon: Icons.replay,
+        action: widget.onPlayAgain,
+      ),
+      (label: 'Review Game', icon: Icons.history, action: widget.onReview),
+      (
+        label: 'Main Menu',
+        icon: Icons.home_outlined,
+        action: widget.onMainMenu,
+      ),
+    ];
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _focusNode.requestFocus(),
     );
@@ -1129,109 +1180,29 @@ class _NewGameDialogState extends State<_NewGameDialog> {
     super.dispose();
   }
 
-  // Row definitions:
-  //   0: Mode       (3 cols: twoPlayer, vsEngine, online)
-  //   1: Play as    (2 cols: white, black)  — vsEngine only
-  //   2: Level      (N cols)               — vsEngine only
-  //   last: Actions (1 col: start)
-
-  int get _rowCount => _mode == GameMode.vsEngine ? 4 : 2;
-
-  int _colCount(int row) {
-    if (row == 0) return 3; // mode row always has 3 options
-    if (_mode == GameMode.twoPlayer || _mode == GameMode.lichess) {
-      return 1; // only actions row remains
-    }
-    return switch (row) {
-      1 => 2,
-      2 => EngineLevel.values.length,
-      _ => 1,
-    };
-  }
-
-  // Maps the logical row index to an "actions row" check.
-  bool _isActionsRow(int row) => row == _rowCount - 1;
-
   KeyEventResult _onKey(FocusNode _, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
     final key = event.logicalKey;
-
     if (key == LogicalKeyboardKey.arrowDown) {
-      if (_focusedRow < _rowCount - 1) {
-        setState(() {
-          _focusedRow++;
-          _focusedCol = _focusedCol.clamp(0, _colCount(_focusedRow) - 1);
-        });
-      }
+      setState(() => _focused = (_focused + 1) % _options.length);
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowUp) {
-      if (_focusedRow > 0) {
-        setState(() {
-          _focusedRow--;
-          _focusedCol = _focusedCol.clamp(0, _colCount(_focusedRow) - 1);
-        });
-      }
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowRight) {
-      final max = _colCount(_focusedRow) - 1;
-      if (_focusedCol < max) setState(() => _focusedCol++);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowLeft) {
-      if (_focusedCol > 0) setState(() => _focusedCol--);
+      setState(
+        () => _focused = (_focused - 1 + _options.length) % _options.length,
+      );
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      _activate();
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.escape ||
-        key == LogicalKeyboardKey.backspace ||
-        key == LogicalKeyboardKey.digit0 ||
-        key == LogicalKeyboardKey.numpad0) {
-      widget.onCancel();
+      _options[_focused].action();
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
-  }
-
-  void _activate() {
-    if (_isActionsRow(_focusedRow)) {
-      if (_focusedCol == 0) {
-        widget.onCancel();
-      } else {
-        widget.onConfirm(_mode, _color, _level);
-      }
-      return;
-    }
-
-    setState(() {
-      if (_focusedRow == 0) {
-        // Mode row
-        _mode = switch (_focusedCol) {
-          0 => GameMode.twoPlayer,
-          1 => GameMode.vsEngine,
-          _ => GameMode.lichess,
-        };
-        // Clamp focused row/col if rows disappear.
-        _focusedRow = _focusedRow.clamp(0, _rowCount - 1);
-        _focusedCol = _focusedCol.clamp(0, _colCount(_focusedRow) - 1);
-      } else if (_mode == GameMode.vsEngine) {
-        if (_focusedRow == 1) {
-          _color =
-              _focusedCol == 0 ? PieceColor.white : PieceColor.black;
-        } else if (_focusedRow == 2) {
-          _level = EngineLevel.values[_focusedCol];
-        }
-      }
-    });
   }
 
   @override
@@ -1239,230 +1210,68 @@ class _NewGameDialogState extends State<_NewGameDialog> {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
 
-    return Focus(
-      focusNode: _focusNode,
-      onKeyEvent: _onKey,
-      child: Dialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text('New Game', style: theme.textTheme.titleMedium),
-                const SizedBox(height: 16),
-
-                // Row 0: Mode
-                _buildSectionLabel(theme, 'Mode'),
-                const SizedBox(height: 6),
-                _buildOptionRow(
-                  rowIndex: 0,
-                  colors: colors,
-                  labels: const ['2-Player', 'vs Engine', 'Online'],
-                  selectedCol: switch (_mode) {
-                    GameMode.twoPlayer => 0,
-                    GameMode.vsEngine  => 1,
-                    GameMode.lichess   => 2,
-                  },
-                ),
-
-                if (_mode == GameMode.vsEngine) ...[
-                  const SizedBox(height: 12),
-
-                  // Row 1: Play as
-                  _buildSectionLabel(theme, 'Play as'),
-                  const SizedBox(height: 6),
-                  _buildOptionRow(
-                    rowIndex: 1,
-                    colors: colors,
-                    labels: const ['White', 'Black'],
-                    selectedCol: _color == PieceColor.white ? 0 : 1,
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // Row 2: Strength
-                  _buildSectionLabel(theme, 'Strength'),
-                  const SizedBox(height: 6),
-                  _buildOptionRow(
-                    rowIndex: 2,
-                    colors: colors,
-                    labels:
-                        EngineLevel.values.map((l) => l.label).toList(),
-                    selectedCol: _level.index,
-                  ),
-                ],
-
-                const SizedBox(height: 20),
-
-                // Actions row
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    _buildActionButton(
-                      rowIndex: _rowCount - 1,
-                      colIndex: 1,
-                      colors: colors,
-                      label: 'Start Game',
-                      filled: true,
-                      onTap: () => widget.onConfirm(_mode, _color, _level),
+    return PopScope(
+      canPop: false,
+      child: Focus(
+        focusNode: _focusNode,
+        onKeyEvent: _onKey,
+        child: AlertDialog(
+          title: Text(widget.resultText),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: List.generate(_options.length, (i) {
+              final opt = _options[i];
+              final focused = i == _focused;
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: GestureDetector(
+                  onTap: opt.action,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 100),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
                     ),
-                  ],
+                    decoration: BoxDecoration(
+                      color: focused
+                          ? colors.primaryContainer
+                          : colors.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: focused ? colors.primary : colors.outlineVariant,
+                        width: focused ? 2.5 : 1,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          opt.icon,
+                          size: 20,
+                          color: focused
+                              ? colors.onPrimaryContainer
+                              : colors.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          opt.label,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: focused
+                                ? FontWeight.bold
+                                : FontWeight.w500,
+                            color: focused
+                                ? colors.onPrimaryContainer
+                                : colors.onSurface,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ],
-            ),
+              );
+            }),
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildSectionLabel(ThemeData theme, String text) {
-    return Text(
-      text,
-      style: theme.textTheme.labelSmall?.copyWith(
-        color: theme.colorScheme.onSurfaceVariant,
-        fontWeight: FontWeight.w600,
-        letterSpacing: 0.8,
-      ),
-    );
-  }
-
-  Widget _buildOptionRow({
-    required int rowIndex,
-    required ColorScheme colors,
-    required List<String> labels,
-    required int selectedCol,
-  }) {
-    return Wrap(
-      spacing: 6,
-      runSpacing: 6,
-      children: List.generate(labels.length, (col) {
-        final isFocused = _focusedRow == rowIndex && _focusedCol == col;
-        final isSelected = selectedCol == col;
-        return GestureDetector(
-          onTap: () {
-            setState(() {
-              _focusedRow = rowIndex;
-              _focusedCol = col;
-            });
-            _activate();
-          },
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 100),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? colors.primaryContainer
-                  : colors.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: isFocused
-                    ? colors.primary
-                    : isSelected
-                        ? colors.primary.withValues(alpha: 0.4)
-                        : colors.outlineVariant,
-                width: isFocused ? 2.5 : 1,
-              ),
-            ),
-            child: Text(
-              labels[col],
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight:
-                    isSelected ? FontWeight.w600 : FontWeight.normal,
-                color: isSelected
-                    ? colors.onPrimaryContainer
-                    : colors.onSurface,
-              ),
-            ),
-          ),
-        );
-      }),
-    );
-  }
-
-  Widget _buildActionButton({
-    required int rowIndex,
-    required int colIndex,
-    required ColorScheme colors,
-    required String label,
-    required bool filled,
-    required VoidCallback onTap,
-  }) {
-    final isFocused =
-        _focusedRow == rowIndex && _focusedCol == colIndex;
-    if (filled) {
-      return AnimatedContainer(
-        duration: const Duration(milliseconds: 100),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          border: isFocused
-              ? Border.all(color: colors.primary, width: 2.5)
-              : null,
-        ),
-        child: FilledButton(
-          onPressed: onTap,
-          child: Text(label),
-        ),
-      );
-    }
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 100),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(8),
-        border: isFocused
-            ? Border.all(color: colors.primary, width: 2.5)
-            : null,
-      ),
-      child: TextButton(
-        onPressed: onTap,
-        child: Text(label),
-      ),
-    );
-  }
-}
-
-// ── Help row ─────────────────────────────────────────────────────────────────
-
-class _HelpRow extends StatelessWidget {
-  const _HelpRow({
-    super.key,
-    required this.icon,
-    required this.label,
-    required this.description,
-  });
-
-  final IconData icon;
-  final String label;
-  final String description;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: theme.colorScheme.primary),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: 64,
-            child: Text(
-              label,
-              style: theme.textTheme.labelMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(description, style: theme.textTheme.bodySmall),
-          ),
-        ],
       ),
     );
   }
