@@ -70,14 +70,39 @@ class LichessService {
     return _token;
   }
 
+  /// Removes the stored token (used by Settings → remove account).
+  Future<void> deleteToken() async {
+    await _storage.delete(key: _tokenKey);
+    _token = null;
+    _username = null;
+  }
+
+  /// True if a token is currently cached in memory (call [loadToken] first).
+  bool get hasToken => _token != null;
+
+  /// Ensures [_username] is populated (used to resolve our colour in
+  /// real-opponent games). No-op if already known or no token is set. AI games
+  /// don't need this — colour is derived from which side is the AI.
+  Future<void> ensureAccountId() async {
+    if (_username != null || _token == null) return;
+    try {
+      final response = await _client
+          .get(Uri.parse('$_base/api/account'), headers: _authHeaders(_token!))
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        _username = data['id'] as String?;
+      }
+    } catch (_) {
+      // Best-effort — colour resolution has other fallbacks.
+    }
+  }
+
   /// Returns true and caches the username if the token has the right scopes.
   Future<bool> validateToken(String token) async {
     try {
       final response = await _client
-          .get(
-            Uri.parse('$_base/api/account'),
-            headers: _authHeaders(token),
-          )
+          .get(Uri.parse('$_base/api/account'), headers: _authHeaders(token))
           .timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) return false;
       final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -130,6 +155,7 @@ class LichessService {
   /// events on [gameStates]. Handles reconnection automatically.
   Future<void> connectToGame(String gameId) async {
     _assertToken();
+    await ensureAccountId();
     _gameId = gameId;
     _reconnectAttempts = 0;
     await _openStream(gameId);
@@ -146,6 +172,7 @@ class LichessService {
         Uri.parse('$_base/api/board/game/stream/$gameId'),
       );
       request.headers.addAll(_authHeaders(_token!));
+      request.headers['Accept'] = 'application/x-ndjson';
 
       final response = await _client.send(request);
       if (response.statusCode != 200) {
@@ -169,8 +196,13 @@ class LichessService {
 
   void _handleLine(String line) {
     if (_disposed) return;
-    if (line.trim().isEmpty) return; // keep-alive
+    // Any received line (including keep-alive newlines) proves the connection
+    // is healthy, so clear the reconnect backoff and reset the heartbeat.
+    // Without this, transient drops escalate the backoff (1→2→4→8→16s) and the
+    // client gives up after 5 attempts, leaving the game frozen.
+    _reconnectAttempts = 0;
     _resetHeartbeat();
+    if (line.trim().isEmpty) return; // keep-alive
 
     try {
       final json = jsonDecode(line) as Map<String, dynamic>;
@@ -195,9 +227,26 @@ class LichessService {
   }
 
   PieceColor _resolveMyColorFromFull(Map<String, dynamic> json) {
-    final white = (json['white'] as Map<String, dynamic>?)?['id'] as String?;
-    if (_username != null && white == _username) return PieceColor.white;
-    return PieceColor.black;
+    final white = json['white'] as Map<String, dynamic>?;
+    final black = json['black'] as Map<String, dynamic>?;
+
+    // In a game vs the Lichess AI, exactly one side is the AI (it carries an
+    // "aiLevel" and no "id") and we are always the other side. This resolves our
+    // colour reliably even when the account username isn't cached — e.g. after
+    // the token was loaded from storage without re-validating.
+    final whiteIsAi = white?['aiLevel'] != null;
+    final blackIsAi = black?['aiLevel'] != null;
+    if (whiteIsAi && !blackIsAi) return PieceColor.black;
+    if (blackIsAi && !whiteIsAi) return PieceColor.white;
+
+    // Real-opponent games: match our own account id.
+    if (_username != null) {
+      if ((white?['id'] as String?) == _username) return PieceColor.white;
+      if ((black?['id'] as String?) == _username) return PieceColor.black;
+    }
+
+    // Unknown — keep the colour we already have rather than forcing black.
+    return _lastMyColor;
   }
 
   // For gameState events we rely on the cached color from gameFull.
@@ -208,13 +257,15 @@ class LichessService {
 
   void _handleGameState(Map<String, dynamic> json, PieceColor myColor) {
     _lastMyColor = myColor;
-    _gameStateController.add(LichessGameState(
-      moves: (json['moves'] as String?) ?? '',
-      status: (json['status'] as String?) ?? 'started',
-      myColor: myColor,
-      wtime: json['wtime'] as int?,
-      btime: json['btime'] as int?,
-    ));
+    _gameStateController.add(
+      LichessGameState(
+        moves: (json['moves'] as String?) ?? '',
+        status: (json['status'] as String?) ?? 'started',
+        myColor: myColor,
+        wtime: json['wtime'] as int?,
+        btime: json['btime'] as int?,
+      ),
+    );
   }
 
   void _handleStreamError(Object error) {
@@ -309,9 +360,9 @@ class LichessService {
   // ── Helpers ──────────────────────────────────────────────────────────────────
 
   Map<String, String> _authHeaders(String token) => {
-        'Authorization': 'Bearer $token',
-        'Accept': 'application/json',
-      };
+    'Authorization': 'Bearer $token',
+    'Accept': 'application/json',
+  };
 
   void _assertToken() {
     if (_token == null) throw StateError('No Lichess token set.');
