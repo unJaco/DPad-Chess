@@ -20,7 +20,8 @@ const gameplayHelpEntries = <HelpEntry>[
   HelpEntry(Icons.close, '1', 'Cancel selection'),
   HelpEntry(Icons.undo, '*', 'Undo last move'),
   HelpEntry(Icons.screen_rotation_alt, '#', 'Flip board orientation'),
-  HelpEntry(Icons.help_outline, '9', 'Show this help'),
+  HelpEntry(Icons.help_outline, '8', 'Show this help'),
+  HelpEntry(Icons.home_outlined, '9', 'Main menu'),
 ];
 
 const legendHelpEntries = <HelpEntry>[

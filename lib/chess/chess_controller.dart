@@ -297,12 +297,9 @@ class ChessController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (_flaggedColor != null) {
-      _flaggedColor = null;
-      _clock?.run(_position.sideToMove);
-      notifyListeners();
-      return;
-    }
+    // Time-out is final: undo doesn't restore clock times, so the flagged side
+    // would still be at 0:00.
+    if (_flaggedColor != null) return;
     if (_isEngineThinking) {
       _engineMoveCancelled = true;
       _engineService.stop();
