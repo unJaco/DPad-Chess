@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import 'chess_models.dart';
 import 'engine_service.dart';
+import 'game_clock.dart';
 import 'game_config.dart';
 import 'lichess_service.dart';
 
@@ -37,6 +38,10 @@ class ChessController extends ChangeNotifier {
   bool _isEngineThinking = false;
   bool _engineMoveCancelled = false;
   PieceColor? _resignedColor;
+  PieceColor? _flaggedColor;
+
+  // ── Clock ────────────────────────────────────────────────────────────────────
+  GameClock? _clock;
 
   // ── Online / Lichess ───────────────────────────────────────────────────────
   final LichessService _lichessService = LichessService();
@@ -80,9 +85,13 @@ class ChessController extends ChangeNotifier {
       _position.isCheckmate ||
       _position.isStalemate ||
       _resignedColor != null ||
+      _flaggedColor != null ||
       _onlineEndReason != null;
 
   bool get isResigned => _resignedColor != null;
+
+  /// The running clock, or null when the game is untimed (Unlimited).
+  GameClock? get clock => _clock;
 
   /// True when a game has been started and has not yet ended — i.e. there is a
   /// game the user can resume.
@@ -108,6 +117,9 @@ class ChessController extends ChangeNotifier {
     if (_resignedColor != null) {
       return '${_resignedColor!.opposite.label} wins by resignation!';
     }
+    if (_flaggedColor != null) {
+      return '${_flaggedColor!.opposite.label} wins on time!';
+    }
     if (_position.isCheckmate) {
       return '${_position.sideToMove.opposite.label} wins by checkmate!';
     }
@@ -123,6 +135,9 @@ class ChessController extends ChangeNotifier {
     if (_onlineEndReason != null) return _onlineEndReason!;
     if (_resignedColor != null) {
       return '${_resignedColor!.opposite.label} wins by resignation!';
+    }
+    if (_flaggedColor != null) {
+      return '${_flaggedColor!.opposite.label} wins on time!';
     }
     if (_position.isCheckmate) {
       return '${_position.sideToMove.opposite.label} wins by checkmate!';
@@ -267,6 +282,7 @@ class ChessController extends ChangeNotifier {
       return;
     }
     _resignedColor = _position.sideToMove;
+    _clock?.pause();
     _selectedSquare = null;
     _legalTargets = const [];
     notifyListeners();
@@ -277,6 +293,13 @@ class ChessController extends ChangeNotifier {
     if (isOnlineMode) return; // undo not supported in online games
     if (_resignedColor != null) {
       _resignedColor = null;
+      _clock?.run(_position.sideToMove);
+      notifyListeners();
+      return;
+    }
+    if (_flaggedColor != null) {
+      _flaggedColor = null;
+      _clock?.run(_position.sideToMove);
       notifyListeners();
       return;
     }
@@ -299,6 +322,7 @@ class ChessController extends ChangeNotifier {
     }
     _selectedSquare = null;
     _legalTargets = const [];
+    if (!gameOver) _clock?.run(_position.sideToMove);
     notifyListeners();
   }
 
@@ -320,6 +344,7 @@ class ChessController extends ChangeNotifier {
     _engineService.stop();
     _isEngineThinking = false;
     _resignedColor = null;
+    _flaggedColor = null;
     _onlineEndReason = null;
     _reviewMode = false;
     _reviewIndex = 0;
@@ -329,6 +354,7 @@ class ChessController extends ChangeNotifier {
     _humanColor = humanColor;
     _engineLevel = level;
     _timeControl = timeControl;
+    _setupClock(timeControl, authoritative: true);
 
     _history
       ..clear()
@@ -342,6 +368,7 @@ class ChessController extends ChangeNotifier {
     this.whiteBottom =
         whiteBottom ??
         (mode == GameMode.twoPlayer || humanColor == PieceColor.white);
+    _clock?.run(_position.sideToMove);
     notifyListeners();
 
     if (mode == GameMode.vsEngine && humanColor == PieceColor.black) {
@@ -362,6 +389,7 @@ class ChessController extends ChangeNotifier {
     _engineService.stop();
     _isEngineThinking = false;
     _resignedColor = null;
+    _flaggedColor = null;
     _onlineEndReason = null;
     _reviewMode = false;
     _reviewIndex = 0;
@@ -370,6 +398,7 @@ class ChessController extends ChangeNotifier {
     _gameMode = GameMode.lichess;
     _humanColor = myColor;
     _timeControl = timeControl;
+    _setupClock(timeControl, authoritative: false);
 
     _history
       ..clear()
@@ -407,6 +436,17 @@ class ChessController extends ChangeNotifier {
     while (_moves.length < remoteMoves.length) {
       final uci = remoteMoves[_moves.length];
       _applyMoveInternal(EngineService.parseMoveUci(uci));
+    }
+
+    // Clocks are server-authoritative online: overwrite from wtime/btime.
+    final clock = _clock;
+    if (clock != null && state.wtime != null && state.btime != null) {
+      clock.sync(
+        whiteMs: state.wtime!,
+        blackMs: state.btime!,
+        active: _position.sideToMove,
+        running: state.status == 'started',
+      );
     }
 
     if (state.status != 'started' && state.status != 'created') {
@@ -453,10 +493,13 @@ class ChessController extends ChangeNotifier {
   void reset() {
     _cancelOnlineGame();
     _resignedColor = null;
+    _flaggedColor = null;
     _onlineEndReason = null;
     _reviewMode = false;
     _reviewIndex = 0;
     _hasStarted = false;
+    _clock?.dispose();
+    _clock = null;
     _history
       ..clear()
       ..add(ChessPosition.initial());
@@ -514,9 +557,43 @@ class ChessController extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Clock ────────────────────────────────────────────────────────────────────
+
+  void _setupClock(TimeControl? tc, {required bool authoritative}) {
+    _clock?.dispose();
+    _clock = null;
+    if (tc == null || tc.isUnlimited) return;
+    _clock = GameClock(
+      initialMs: tc.limitSeconds * 1000,
+      incrementMs: tc.incrementSeconds * 1000,
+      authoritative: authoritative,
+      onFlag: authoritative ? _onClockFlag : null,
+    );
+  }
+
+  void _onClockFlag(PieceColor color) {
+    if (gameOver) return;
+    _flaggedColor = color;
+    notifyListeners();
+  }
+
+  /// Pauses the local clock when the board leaves the screen (offline only —
+  /// online clocks are re-synced from the server on the next update).
+  void pauseClock() {
+    if (isOnlineMode) return;
+    _clock?.pause();
+  }
+
+  /// Resumes the local clock when the board returns (offline only).
+  void resumeClock() {
+    if (isOnlineMode || gameOver) return;
+    _clock?.run(_position.sideToMove);
+  }
+
   @override
   void dispose() {
     _cancelOnlineGame();
+    _clock?.dispose();
     _lichessService.dispose();
     _engineService.dispose();
     super.dispose();
@@ -557,7 +634,14 @@ class ChessController extends ChangeNotifier {
   }
 
   void _applyMove(ChessMove move) {
+    final mover = _position.sideToMove;
     _applyMoveInternal(move);
+    // Offline clock: charge the mover's increment and switch, or stop on mate.
+    if (gameOver) {
+      _clock?.pause();
+    } else {
+      _clock?.onMove(mover);
+    }
     notifyListeners();
     _maybeStartEngineThink();
   }

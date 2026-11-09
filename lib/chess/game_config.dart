@@ -1,9 +1,8 @@
 /// A chess time control (clock) selection.
 ///
-/// NOTE: the selection is currently only *stored*, not enforced — no countdown
-/// clock is implemented yet. Online games forward [limitSeconds]/[incrementSeconds]
-/// to Lichess via `seekAi`; offline (2-player / vs-engine) games simply remember
-/// the choice on [ChessController.timeControl] for a future clock feature.
+/// Offline games (2-player / vs-engine) enforce it with a local `GameClock`.
+/// Online games forward [limitSeconds]/[incrementSeconds] to Lichess via
+/// `seekAi`; there the clock is display-only and synced from the server.
 class TimeControl {
   const TimeControl({
     required this.label,

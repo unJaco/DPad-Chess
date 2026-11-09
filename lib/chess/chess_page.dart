@@ -4,7 +4,9 @@ import 'package:flutter/services.dart';
 import 'app_settings.dart';
 import 'chess_controller.dart';
 import 'chess_models.dart';
+import 'clock_bar.dart';
 import 'engine_service.dart';
+import 'game_clock.dart';
 import 'help_content.dart';
 
 /// The in-game board. The [controller] is created and configured by the setup
@@ -41,11 +43,15 @@ class _GamePageState extends State<GamePage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _boardFocusNode.requestFocus();
+      // Resume the (offline) clock now that the board is on screen again.
+      _controller.resumeClock();
     });
   }
 
   @override
   void dispose() {
+    // Pause the (offline) clock while the board is off screen.
+    _controller.pauseClock();
     _controller.removeListener(_onControllerChanged);
     _historyScrollController.dispose();
     _boardFocusNode.dispose();
@@ -401,13 +407,25 @@ class _GamePageState extends State<GamePage> {
           child: AnimatedBuilder(
             animation: _rebuildListenable,
             builder: (context, _) {
+              final reviewing = _controller.isReviewing;
+              final clock = _controller.clock;
+              final showClocks = !reviewing && clock != null;
+
               return Padding(
                 padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
                 child: Column(
                   children: [
-                    _buildMoveHistory(context),
-                    _buildStatusText(context),
-                    if (_controller.isReviewing) _buildReviewBar(context),
+                    // Above the board: during review show the move list + status
+                    // (the "expanded" analysis info); during play show the far
+                    // player's clock, or a minimal turn line for untimed games.
+                    if (reviewing) ...[
+                      _buildMoveHistory(context),
+                      _buildStatusText(context),
+                      _buildReviewBar(context),
+                    ] else if (showClocks) ...[
+                      _clockBar(clock, top: true),
+                    ] else
+                      _buildStatusText(context),
                     if (_controller.isWaitingForOpponent)
                       const LinearProgressIndicator(minHeight: 2),
                     const SizedBox(height: 4),
@@ -419,6 +437,10 @@ class _GamePageState extends State<GamePage> {
                         ),
                       ),
                     ),
+                    if (showClocks) ...[
+                      const SizedBox(height: 4),
+                      _clockBar(clock, top: false),
+                    ],
                   ],
                 ),
               );
@@ -486,6 +508,16 @@ class _GamePageState extends State<GamePage> {
               },
             ),
     );
+  }
+
+  /// A clock row for the near (bottom) or far (top) side of the board. Follows
+  /// the current orientation so "bottom" is always the side facing the player.
+  Widget _clockBar(GameClock clock, {required bool top}) {
+    final nearColor = _controller.whiteBottom
+        ? PieceColor.white
+        : PieceColor.black;
+    final color = top ? nearColor.opposite : nearColor;
+    return ClockBar(clock: clock, color: color);
   }
 
   Widget _buildStatusText(BuildContext context) {
