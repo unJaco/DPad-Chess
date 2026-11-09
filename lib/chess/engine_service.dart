@@ -13,37 +13,29 @@ enum EngineLevel { beginner, intermediate, hard }
 extension EngineLevelX on EngineLevel {
   String get label => switch (this) {
     EngineLevel.beginner => 'Beginner',
-    //EngineLevel.easy => 'Easy',
     EngineLevel.intermediate => 'Middle',
     EngineLevel.hard => 'Hard',
-    //EngineLevel.expert => 'Expert',
   };
 
   /// Stockfish UCI "Skill Level" option value (0–20).
   int get skillLevel => switch (this) {
     EngineLevel.beginner => 0,
-    //EngineLevel.easy => 5,
     EngineLevel.intermediate => 10,
     EngineLevel.hard => 16,
-    //EngineLevel.expert => 20,
   };
 
   /// Maximum wall-clock search time sent to "go movetime".
   int get moveTimeMs => switch (this) {
     EngineLevel.beginner => 100,
-    //EngineLevel.easy => 250,
     EngineLevel.intermediate => 500,
     EngineLevel.hard => 1000,
-    //EngineLevel.expert => 2000,
   };
 
   /// Hard depth cap (null = unlimited).
   int? get maxDepth => switch (this) {
     EngineLevel.beginner => 1,
-    //EngineLevel.easy => 3,
     EngineLevel.intermediate => 5,
     EngineLevel.hard => 10,
-    //EngineLevel.expert => null,
   };
 }
 
