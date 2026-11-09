@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app_settings.dart';
 import '../chess_controller.dart';
-import '../chess_page.dart';
+import '../game_page.dart';
 import '../keypad_widgets.dart';
 import 'help_page.dart';
 import 'mode_select_page.dart';

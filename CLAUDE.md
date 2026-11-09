@@ -33,7 +33,7 @@ Tests: [test/widget_test.dart](test/widget_test.dart) holds navigation smoke tes
 All application code lives in `lib/chess/`. [lib/main.dart](lib/main.dart) owns the two long-lived objects at the root — `ChessController` and `AppSettings` — and passes them down; `home` is `StartPage`.
 
 ### Navigation: full-screen pages
-Flow: `StartPage` → `ModeSelectPage` → `GameSetupPage` (2-player / vs-engine) or `OnlineSetupPage` (Lichess) → `GamePage`. Plus `SettingsPage` and `HelpPage`. Pages live in [lib/chess/pages/](lib/chess/pages/); the board page `GamePage` lives in [chess_page.dart](lib/chess/chess_page.dart) (file name predates the rename).
+Flow: `StartPage` → `ModeSelectPage` → `GameSetupPage` (2-player / vs-engine) or `OnlineSetupPage` (Lichess) → `GamePage`. Plus `SettingsPage` and `HelpPage`. Pages live in [lib/chess/pages/](lib/chess/pages/); the board page `GamePage` lives in [game_page.dart](lib/chess/game_page.dart).
 
 Reusable keypad building blocks are in [keypad_widgets.dart](lib/chess/keypad_widgets.dart): `KeypadMenuScaffold` (vertical menu), `KeypadOptionRow` (chip row for setup pages), `showKeypadChoiceDialog`. Use these for new menus/dialogs instead of hand-rolling navigation again. Help text is shared between the in-game dialog and `HelpPage` via [help_content.dart](lib/chess/help_content.dart).
 
@@ -53,7 +53,7 @@ Reusable keypad building blocks are in [keypad_widgets.dart](lib/chess/keypad_wi
 - **twoPlayer / vsEngine** → apply locally; vsEngine then triggers an async engine move when it's the engine's turn.
 - **lichess** → apply **optimistically**, POST to Lichess, and roll back the last position if the POST is rejected. Incoming Lichess state is the authority: Lichess sends the *full* move list each update and the controller applies any moves it doesn't already have.
 
-Game end states: checkmate, stalemate, resignation (`_resignedColor`), time-out (`_flaggedColor`), or an online end reason (`_onlineEndReason`). After the game ends, `_GameOverDialog` offers Play Again / Review Game / Main Menu.
+Game end states: checkmate, stalemate, resignation (`_resignedColor`), time-out (`_flaggedColor`), or an online end reason (`_onlineEndReason`). After the game ends, `GameOverDialog` ([game_over_dialog.dart](lib/chess/game_over_dialog.dart)) offers Play Again / Review Game / Main Menu.
 
 ### Chess clock
 [game_clock.dart](lib/chess/game_clock.dart) — `GameClock extends ChangeNotifier`, its own notifier so the clock ticks (200 ms) without repainting the board. Created by `_setupClock` from the selected `TimeControl` ([game_config.dart](lib/chess/game_config.dart)); `null` for Unlimited.
@@ -77,15 +77,15 @@ Game end states: checkmate, stalemate, resignation (`_resignedColor`), time-out 
 ### Input model — read this before touching any UI
 The app is **keyboard/D-pad-first** and does **not** use Flutter's normal focus traversal for navigation.
 
-Board keys during play (`_onKeyEvent` in [chess_page.dart](lib/chess/chess_page.dart)): arrows = move cursor, Enter/Select/Space = activate (select piece / play move), `0` = resign, `1`/Esc/Backspace = cancel selection, `*` = undo (offline only), `#` = flip board, `8` = help, `9` = main menu. The hardware back button opens the resign dialog during a game.
+Board keys during play (`_onKeyEvent` in [game_page.dart](lib/chess/game_page.dart)): arrows = move cursor, Enter/Select/Space = activate (select piece / play move), `0` = resign, `1`/Esc/Backspace = cancel selection, `*` = undo (offline only), `#` = flip board, `8` = help, `9` = main menu. The hardware back button opens the resign dialog during a game.
 
 Review mode (`_onReviewKey`): ←/→ step one ply, ↑ end, ↓ start, `#` flip, `1` reopen end-of-game options, `0`/Esc = main menu.
 
 Menus/setup pages: ↑/↓ move rows, ←/→ change a row's value, OK activates, `0`/Esc goes back.
 
 Two consequences to respect when adding UI:
-1. **Every page and dialog does its own D-pad navigation** — a `FocusNode` + `onKeyEvent` + manual row/column index state (`KeypadMenuScaffold`, `GameSetupPage`, `OnlineSetupPage`, `_PromotionPicker`, `_GameOverDialog` all follow this pattern). Standard buttons alone won't be keyboard-reachable; prefer the widgets in `keypad_widgets.dart`.
+1. **Every page and dialog does its own D-pad navigation** — a `FocusNode` + `onKeyEvent` + manual row/column index state (`KeypadMenuScaffold`, `GameSetupPage`, `OnlineSetupPage`, `PromotionPicker` ([promotion_picker.dart](lib/chess/promotion_picker.dart)), `GameOverDialog` all follow this pattern). Standard buttons alone won't be keyboard-reachable; prefer the widgets in `keypad_widgets.dart`.
 2. **Cursor snapping:** when a piece is selected, arrow keys don't move one square — `_moveCursorToTarget` snaps the cursor to the nearest legal target in that direction using a directional score. Board orientation (`whiteBottom`) flips both the rendering (`_squareForDisplay`) and the D-pad direction vectors.
 
 ### Piece rendering
-Pieces come from one sprite sheet `assets/pieces.png`, **6 columns (Q, K, R, N, B, P) × 2 rows (black top, white bottom)**. `_PieceSprite` shows a single cell by sizing the image 6× wide and clipping with `OverflowBox` alignment — keep that layout in mind if the asset is ever replaced.
+Pieces come from one sprite sheet `assets/pieces.png`, **6 columns (Q, K, R, N, B, P) × 2 rows (black top, white bottom)**. `PieceSprite` ([piece_sprite.dart](lib/chess/piece_sprite.dart)) shows a single cell by sizing the image 6× wide and clipping with `OverflowBox` alignment — keep that layout in mind if the asset is ever replaced.

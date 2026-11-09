@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import '../app_settings.dart';
 import '../chess_controller.dart';
 import '../chess_models.dart';
-import '../chess_page.dart';
+import '../game_page.dart';
 import '../game_config.dart';
 import '../token_entry_dialog.dart';
 

@@ -7,7 +7,10 @@ import 'chess_models.dart';
 import 'clock_bar.dart';
 import 'engine_service.dart';
 import 'game_clock.dart';
+import 'game_over_dialog.dart';
 import 'help_content.dart';
+import 'piece_sprite.dart';
+import 'promotion_picker.dart';
 
 /// The in-game board. The [controller] is created and configured by the setup
 /// flow before this page is pushed; this page only renders it and handles the
@@ -97,7 +100,7 @@ class _GamePageState extends State<GamePage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => _PromotionPicker(
+      builder: (ctx) => PromotionPicker(
         color: _controller.position.sideToMove,
         onConfirm: (piece) {
           Navigator.of(ctx).pop();
@@ -148,7 +151,7 @@ class _GamePageState extends State<GamePage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => _GameOverDialog(
+      builder: (ctx) => GameOverDialog(
         resultText: _controller.gameResultText ?? 'Game Over',
         isOnline: _controller.isOnlineMode,
         onPlayAgain: () {
@@ -480,28 +483,23 @@ class _GamePageState extends State<GamePage> {
                     ? '${index ~/ 2 + 1}.\u00a0${moves[index]}'
                     : moves[index];
 
-                return GestureDetector(
-                  onTap: () {
-                    // TODO: navigate to this position in the history
-                  },
-                  child: Container(
-                    alignment: Alignment.center,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    decoration: BoxDecoration(
-                      color: isWhiteMove
-                          ? colors.surfaceContainerHighest
-                          : colors.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: colors.outlineVariant,
-                        width: 0.5,
-                      ),
+                return Container(
+                  alignment: Alignment.center,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: isWhiteMove
+                        ? colors.surfaceContainerHighest
+                        : colors.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: colors.outlineVariant,
+                      width: 0.5,
                     ),
-                    child: Text(
-                      label,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
+                  ),
+                  child: Text(
+                    label,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
                 );
@@ -720,7 +718,7 @@ class _GamePageState extends State<GamePage> {
             if (piece != null)
               LayoutBuilder(
                 builder: (_, constraints) => Center(
-                  child: _PieceSprite(
+                  child: PieceSprite(
                     piece: piece,
                     size: constraints.maxWidth * 0.82,
                   ),
@@ -842,469 +840,5 @@ class _GamePageState extends State<GamePage> {
     }
 
     return background;
-  }
-}
-
-// ── Promotion picker ────────────────────────────────────────────────────────
-
-class _PromotionPicker extends StatefulWidget {
-  const _PromotionPicker({
-    required this.color,
-    required this.onConfirm,
-    required this.onCancel,
-  });
-
-  final PieceColor color;
-  final ValueChanged<PieceType> onConfirm;
-  final VoidCallback onCancel;
-
-  @override
-  State<_PromotionPicker> createState() => _PromotionPickerState();
-}
-
-class _PromotionPickerState extends State<_PromotionPicker> {
-  // Mapped to D-pad directions: up=queen, right=rook, down=bishop, left=knight
-  static const _up = PieceType.queen;
-  static const _right = PieceType.rook;
-  static const _down = PieceType.bishop;
-  static const _left = PieceType.knight;
-
-  PieceType _selected = _up; // queen is default / most common
-  late final FocusNode _focusNode;
-
-  @override
-  void initState() {
-    super.initState();
-    _focusNode = FocusNode();
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => _focusNode.requestFocus(),
-    );
-  }
-
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  KeyEventResult _onKey(FocusNode _, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-    final key = event.logicalKey;
-
-    // D-pad directions select the corresponding piece
-    if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() => _selected = _up);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowRight) {
-      setState(() => _selected = _right);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() => _selected = _down);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowLeft) {
-      setState(() => _selected = _left);
-      return KeyEventResult.handled;
-    }
-    // OK / center button confirms
-    if (key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.space) {
-      widget.onConfirm(_selected);
-      return KeyEventResult.handled;
-    }
-    // 0 / Escape cancels
-    if (key == LogicalKeyboardKey.escape ||
-        key == LogicalKeyboardKey.backspace ||
-        key == LogicalKeyboardKey.digit0 ||
-        key == LogicalKeyboardKey.numpad0) {
-      widget.onCancel();
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.ignored;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.colorScheme;
-
-    return Focus(
-      focusNode: _focusNode,
-      onKeyEvent: _onKey,
-      child: Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Promote pawn', style: theme.textTheme.titleMedium),
-              const SizedBox(height: 4),
-              Text(
-                _pieceName(_selected),
-                style: theme.textTheme.labelMedium?.copyWith(
-                  color: colors.primary,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 14),
-              // ── Cross layout ──────────────────────────────────────────────
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Top: Queen (↑)
-                  _PieceCard(
-                    piece: Piece(widget.color, _up),
-                    selected: _selected == _up,
-                    colors: colors,
-                    onTap: () => widget.onConfirm(_up),
-                  ),
-                  const SizedBox(height: 6),
-                  // Middle row: Knight (←)  ·  Rook (→)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _PieceCard(
-                        piece: Piece(widget.color, _left),
-                        selected: _selected == _left,
-                        colors: colors,
-                        onTap: () => widget.onConfirm(_left),
-                      ),
-                      // Center: OK hint
-                      SizedBox(
-                        width: 62,
-                        height: 62,
-                        child: Center(
-                          child: Container(
-                            width: 36,
-                            height: 36,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: colors.outlineVariant,
-                                width: 1.5,
-                              ),
-                            ),
-                            child: Center(
-                              child: Text(
-                                'OK',
-                                style: theme.textTheme.labelSmall?.copyWith(
-                                  color: colors.onSurfaceVariant,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      _PieceCard(
-                        piece: Piece(widget.color, _right),
-                        selected: _selected == _right,
-                        colors: colors,
-                        onTap: () => widget.onConfirm(_right),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  // Bottom: Bishop (↓)
-                  _PieceCard(
-                    piece: Piece(widget.color, _down),
-                    selected: _selected == _down,
-                    colors: colors,
-                    onTap: () => widget.onConfirm(_down),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Text(
-                '↑↓←→ select  •  OK confirm  •  0 cancel',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: colors.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  static String _pieceName(PieceType type) {
-    switch (type) {
-      case PieceType.queen:
-        return 'Queen';
-      case PieceType.rook:
-        return 'Rook';
-      case PieceType.bishop:
-        return 'Bishop';
-      case PieceType.knight:
-        return 'Knight';
-      default:
-        return '';
-    }
-  }
-}
-
-class _PieceCard extends StatelessWidget {
-  const _PieceCard({
-    required this.piece,
-    required this.selected,
-    required this.colors,
-    required this.onTap,
-  });
-
-  final Piece piece;
-  final bool selected;
-  final ColorScheme colors;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        width: 62,
-        height: 62,
-        decoration: BoxDecoration(
-          color: selected
-              ? colors.primaryContainer
-              : colors.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: selected ? colors.primary : colors.outlineVariant,
-            width: selected ? 2.5 : 1,
-          ),
-          boxShadow: selected
-              ? [
-                  BoxShadow(
-                    color: colors.primary.withValues(alpha: 0.25),
-                    blurRadius: 8,
-                    spreadRadius: 1,
-                  ),
-                ]
-              : null,
-        ),
-        child: Center(child: _PieceSprite(piece: piece, size: 42)),
-      ),
-    );
-  }
-}
-
-// ── Piece sprite ─────────────────────────────────────────────────────────────
-//
-// Renders one cell from the sprite sheet at assets/pieces.png.
-// Sheet layout: 6 columns × 2 rows.
-//   Columns (left→right): Queen, King, Rook, Knight, Bishop, Pawn
-//   Row 0 (top):          Black pieces (filled)
-//   Row 1 (bottom):       White pieces (outline)
-
-class _PieceSprite extends StatelessWidget {
-  const _PieceSprite({required this.piece, required this.size});
-
-  final Piece piece;
-  final double size;
-
-  static const _assetPath = 'assets/pieces.png';
-
-  static int _col(PieceType type) => switch (type) {
-    PieceType.queen => 0,
-    PieceType.king => 1,
-    PieceType.rook => 2,
-    PieceType.knight => 3,
-    PieceType.bishop => 4,
-    PieceType.pawn => 5,
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final col = _col(piece.type);
-    final row = piece.color == PieceColor.black ? 0 : 1;
-
-    // Map col 0..5 → alignment x -1..1, row 0..1 → alignment y -1..1
-    final alignX = -1.0 + col * 2.0 / 5.0;
-    final alignY = row == 0 ? -1.0 : 1.0;
-
-    return SizedBox(
-      width: size,
-      height: size,
-      child: ClipRect(
-        child: OverflowBox(
-          minWidth: size * 6,
-          maxWidth: size * 6,
-          minHeight: size * 2,
-          maxHeight: size * 2,
-          alignment: Alignment(alignX, alignY),
-          child: Image.asset(
-            _assetPath,
-            width: size * 6,
-            height: size * 2,
-            fit: BoxFit.fill,
-            filterQuality: FilterQuality.medium,
-            gaplessPlayback: true,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ── Game over dialog ──────────────────────────────────────────────────────────
-//
-// Keypad-navigable end-of-game options: ↑↓ move, OK activate.
-
-class _GameOverDialog extends StatefulWidget {
-  const _GameOverDialog({
-    required this.resultText,
-    required this.isOnline,
-    required this.onPlayAgain,
-    required this.onReview,
-    required this.onMainMenu,
-  });
-
-  final String resultText;
-  final bool isOnline;
-  final VoidCallback onPlayAgain;
-  final VoidCallback onReview;
-  final VoidCallback onMainMenu;
-
-  @override
-  State<_GameOverDialog> createState() => _GameOverDialogState();
-}
-
-class _GameOverDialogState extends State<_GameOverDialog> {
-  late final FocusNode _focusNode;
-  late final List<({String label, IconData icon, VoidCallback action})>
-  _options;
-  int _focused = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _focusNode = FocusNode();
-    _options = [
-      (
-        label: widget.isOnline ? 'New Game' : 'Play Again',
-        icon: Icons.replay,
-        action: widget.onPlayAgain,
-      ),
-      (label: 'Review Game', icon: Icons.history, action: widget.onReview),
-      (
-        label: 'Main Menu',
-        icon: Icons.home_outlined,
-        action: widget.onMainMenu,
-      ),
-    ];
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => _focusNode.requestFocus(),
-    );
-  }
-
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  KeyEventResult _onKey(FocusNode _, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-    final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() => _focused = (_focused + 1) % _options.length);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowUp) {
-      setState(
-        () => _focused = (_focused - 1 + _options.length) % _options.length,
-      );
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.space) {
-      _options[_focused].action();
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.ignored;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.colorScheme;
-
-    return PopScope(
-      canPop: false,
-      child: Focus(
-        focusNode: _focusNode,
-        onKeyEvent: _onKey,
-        child: AlertDialog(
-          title: Text(widget.resultText),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: List.generate(_options.length, (i) {
-              final opt = _options[i];
-              final focused = i == _focused;
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: GestureDetector(
-                  onTap: opt.action,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 100),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    decoration: BoxDecoration(
-                      color: focused
-                          ? colors.primaryContainer
-                          : colors.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: focused ? colors.primary : colors.outlineVariant,
-                        width: focused ? 2.5 : 1,
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          opt.icon,
-                          size: 20,
-                          color: focused
-                              ? colors.onPrimaryContainer
-                              : colors.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          opt.label,
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            fontWeight: focused
-                                ? FontWeight.bold
-                                : FontWeight.w500,
-                            color: focused
-                                ? colors.onPrimaryContainer
-                                : colors.onSurface,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            }),
-          ),
-        ),
-      ),
-    );
   }
 }
